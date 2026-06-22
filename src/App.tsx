@@ -272,7 +272,7 @@ export default function App() {
             onDelete={handleDeleteProperty}
           />
           {selectedProperty && (
-            <PropertyDetail property={selectedProperty} score={scoreById.get(selectedProperty.id)!} />
+            <PropertyDetail property={selectedProperty} score={scoreById.get(selectedProperty.id)!} indicators={state.indicators} />
           )}
         </div>
       )}

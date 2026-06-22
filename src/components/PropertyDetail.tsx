@@ -1,19 +1,28 @@
-import type { GradeKey, PropertyRecord, PropertyScore } from "../domain/types";
-import { RadarChart } from "./charts/RadarChart";
+import type { GradeKey, PropertyRecord, PropertyScore, Indicator } from "../domain/types";
+import { RadarChart, type RadarDatum } from "./charts/RadarChart";
 import { EVALUATION_GRADES } from "../domain/defaults";
 
 interface PropertyDetailProps {
   property: PropertyRecord;
   score: PropertyScore;
+  indicators: Indicator[];
 }
 
-export function PropertyDetail({ property, score }: PropertyDetailProps) {
+export function PropertyDetail({ property, score, indicators }: PropertyDetailProps) {
   const gradeLabel: Record<GradeKey, string> = {
     excellent: "优秀",
     good: "良好",
     average: "一般",
     poor: "较差"
   };
+
+  const radarData: RadarDatum[] = indicators
+    .filter((ind) => ind.participatesInScoring)
+    .map((ind) => ({
+      id: ind.id,
+      label: ind.name,
+      score: score.indicatorScores[ind.id] ?? 0
+    }));
 
   return (
     <section className="panel detail-panel">
@@ -49,8 +58,8 @@ export function PropertyDetail({ property, score }: PropertyDetailProps) {
             ))}
           </div>
 
-          <h3>维度得分</h3>
-          <RadarChart scores={score.categoryScores} />
+          <h3>指标得分</h3>
+          <RadarChart data={radarData} />
         </>
       )}
     </section>

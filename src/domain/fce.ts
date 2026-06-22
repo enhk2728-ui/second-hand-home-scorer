@@ -73,6 +73,16 @@ export function scoreMembership(vector: MembershipVector): number {
   );
 }
 
+export function effectiveValueForScoring(indicator: Indicator, rawValue: string | number | boolean | ""): string | number | boolean | "" {
+  if (indicator.inputType === "rating10" && rawValue === "") return 5;
+  return rawValue;
+}
+
+export function indicatorDisplayScore(indicator: Indicator, membership: MembershipVector, value: string | number | boolean | ""): number {
+  if (indicator.inputType === "rating10") return Math.max(0, Math.min(100, Number(value) * 10));
+  return scoreMembership(membership);
+}
+
 export function dominantGrade(vector: MembershipVector): GradeKey {
   return (Object.keys(vector) as GradeKey[]).reduce((best, key) => (vector[key] > vector[best] ? key : best), "excellent");
 }
@@ -99,7 +109,9 @@ export function calculatePropertyScore(property: PropertyRecord, indicators: Ind
 
   for (const indicator of indicators) {
     if (!indicator.participatesInScoring) continue;
-    const membership = membershipFromRule(indicator, property.valuesByIndicatorId[indicator.id] ?? "");
+    const rawValue = property.valuesByIndicatorId[indicator.id] ?? "";
+    const effectiveValue = effectiveValueForScoring(indicator, rawValue);
+    const membership = membershipFromRule(indicator, effectiveValue);
     if (!membership) continue;
 
     const weight = Math.max(0, indicator.finalWeight);
@@ -118,7 +130,7 @@ export function calculatePropertyScore(property: PropertyRecord, indicators: Ind
     categoryMembership[indicator.category].average += membership.average * weight;
     categoryMembership[indicator.category].poor += membership.poor * weight;
     categoryWeights[indicator.category] += weight;
-    indicatorScores[indicator.id] = scoreMembership(membership);
+    indicatorScores[indicator.id] = indicatorDisplayScore(indicator, membership, effectiveValue);
   }
 
   if (totalWeight <= 0) {
