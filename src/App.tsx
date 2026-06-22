@@ -6,11 +6,20 @@ import { IndicatorSettings } from "./components/IndicatorSettings";
 import { ScoringMatrix } from "./components/ScoringMatrix";
 import { ResultsView } from "./components/ResultsView";
 import { PropertyDetail } from "./components/PropertyDetail";
+import { OnboardingGuide, type MigrationChoice } from "./components/OnboardingGuide";
 import { loadState, saveState, serializeState, deserializeState } from "./domain/storage";
 import { calculatePropertyScore } from "./domain/fce";
 import { buildCsvExport } from "./domain/csv";
 import { DEFAULT_STATE } from "./domain/defaults";
 import type { AppState, PropertyRecord, ScoringProfile } from "./domain/types";
+import {
+  needsIndicatorMigration,
+  hasSeenOnboarding,
+  mergeMissingDefaults,
+  detectMissingDefaultIndicators,
+  setStoredIndicatorVersion,
+  CURRENT_INDICATOR_VERSION,
+} from "./domain/stateMigration";
 
 export default function App() {
   const [state, setState] = useState<AppState>(loadState);
@@ -18,6 +27,22 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  // Track migration-needed in state so it updates after decisions
+  const [migrationNeeded, setMigrationNeeded] = useState(() => needsIndicatorMigration());
+  const missingDefaults = useMemo(
+    () => detectMissingDefaultIndicators(state.indicators),
+    [state.indicators],
+  );
+  const showMigrationPrompt = migrationNeeded && missingDefaults.length > 0;
+
+  // Show onboarding on first visit or when migration is needed
+  useEffect(() => {
+    if (!hasSeenOnboarding() || migrationNeeded) {
+      setShowOnboarding(true);
+    }
+  }, [migrationNeeded]);
 
   useEffect(() => {
     saveState(state);
@@ -25,17 +50,17 @@ export default function App() {
 
   const scores = useMemo(
     () => state.properties.map((p) => calculatePropertyScore(p, state.indicators)),
-    [state.properties, state.indicators]
+    [state.properties, state.indicators],
   );
 
   const scoreById = useMemo(
     () => new Map(scores.map((s) => [s.propertyId, s])),
-    [scores]
+    [scores],
   );
 
   const selectedProperty = useMemo(
     () => (state.selectedPropertyId ? state.properties.find((p) => p.id === state.selectedPropertyId) ?? null : null),
-    [state.properties, state.selectedPropertyId]
+    [state.properties, state.selectedPropertyId],
   );
 
   const handleAddProperty = useCallback(() => {
@@ -53,12 +78,12 @@ export default function App() {
       valuesByIndicatorId: {},
       hardFails: [],
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
     };
     setState((prev) => ({
       ...prev,
       properties: [...prev.properties, next],
-      selectedPropertyId: next.id
+      selectedPropertyId: next.id,
     }));
     setView("form");
   }, []);
@@ -67,7 +92,7 @@ export default function App() {
     setState((prev) => ({
       ...prev,
       properties: prev.properties.filter((p) => p.id !== id),
-      selectedPropertyId: prev.selectedPropertyId === id ? null : prev.selectedPropertyId
+      selectedPropertyId: prev.selectedPropertyId === id ? null : prev.selectedPropertyId,
     }));
   }, []);
 
@@ -83,7 +108,7 @@ export default function App() {
   const handleChangeProperty = useCallback((property: PropertyRecord) => {
     setState((prev) => ({
       ...prev,
-      properties: prev.properties.map((p) => (p.id === property.id ? property : p))
+      properties: prev.properties.map((p) => (p.id === property.id ? property : p)),
     }));
   }, []);
 
@@ -126,7 +151,7 @@ export default function App() {
           const restored = deserializeState(reader.result as string);
           setState({
             ...restored,
-            selectedPropertyId: restored.properties[0]?.id ?? null
+            selectedPropertyId: restored.properties[0]?.id ?? null,
           });
           setImportError(null);
         } catch {
@@ -136,7 +161,7 @@ export default function App() {
       reader.readAsText(file);
       event.target.value = "";
     },
-    []
+    [],
   );
 
   const handleExportCsv = useCallback(() => {
@@ -157,8 +182,46 @@ export default function App() {
     setView("list");
   }, []);
 
+  const handleOnboardingComplete = useCallback(
+    (choice: MigrationChoice) => {
+      setShowOnboarding(false);
+      setMigrationNeeded(false);
+      if (choice === null) {
+        // User dismissed/skipped — still update version to avoid re-prompt
+        setStoredIndicatorVersion(CURRENT_INDICATOR_VERSION);
+        return;
+      }
+      if (choice === "merge") {
+        setState((prev) => ({
+          ...prev,
+          indicators: mergeMissingDefaults(prev.indicators),
+        }));
+        setStoredIndicatorVersion(CURRENT_INDICATOR_VERSION);
+      } else if (choice === "keep") {
+        setStoredIndicatorVersion(CURRENT_INDICATOR_VERSION);
+      } else if (choice === "reset") {
+        setState(DEFAULT_STATE);
+        setStoredIndicatorVersion(CURRENT_INDICATOR_VERSION);
+        setView("list");
+      }
+    },
+    [],
+  );
+
+  const handleOpenHelp = useCallback(() => {
+    setShowOnboarding(true);
+  }, []);
+
   return (
-    <Shell activeView={view} onViewChange={setView}>
+    <Shell activeView={view} onViewChange={setView} onHelp={handleOpenHelp}>
+      {showOnboarding && (
+        <OnboardingGuide
+          showMigrationPrompt={showMigrationPrompt}
+          missingCount={missingDefaults.length}
+          onComplete={handleOnboardingComplete}
+        />
+      )}
+
       <div className="toolbar">
         <button className="ghost-button" type="button" onClick={handleExportJson}>
           导出 JSON

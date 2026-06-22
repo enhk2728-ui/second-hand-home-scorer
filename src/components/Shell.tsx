@@ -1,10 +1,11 @@
-import { BarChart3, Home, ListChecks, Settings2, Star } from "lucide-react";
+import { BarChart3, Home, HelpCircle, ListChecks, Settings2, Star } from "lucide-react";
 
 export type ViewKey = "list" | "form" | "score" | "results" | "settings";
 
 interface ShellProps {
   activeView: ViewKey;
   onViewChange: (view: ViewKey) => void;
+  onHelp?: () => void;
   children: React.ReactNode;
 }
 
@@ -16,11 +17,11 @@ const items: Array<{ key: ViewKey; label: string; icon: React.ReactNode }> = [
   { key: "settings", label: "指标", icon: <Settings2 size={18} /> }
 ];
 
-export function Shell({ activeView, onViewChange, children }: ShellProps) {
+export function Shell({ activeView, onViewChange, onHelp, children }: ShellProps) {
   return (
     <div className="layout">
       <aside className="sidebar">
-        <div>
+        <div className="sidebar-brand">
           <p className="eyebrow">FCE Scorer</p>
           <h1>二手房评分器</h1>
         </div>
@@ -38,6 +39,19 @@ export function Shell({ activeView, onViewChange, children }: ShellProps) {
             </button>
           ))}
         </nav>
+        <div className="sidebar-footer">
+          {onHelp && (
+            <button
+              className="nav-item help-button"
+              type="button"
+              onClick={onHelp}
+              title="帮助与声明"
+            >
+              <HelpCircle size={18} />
+              <span>帮助</span>
+            </button>
+          )}
+        </div>
       </aside>
       <section className="workspace">{children}</section>
     </div>
