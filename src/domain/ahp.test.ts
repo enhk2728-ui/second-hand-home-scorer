@@ -7,6 +7,8 @@ import {
   calculateAhpConsistency,
   calculateAhp,
   applyAhpWeightsFromMatrix,
+  generateEqualAhpComparisons,
+  generateRankedAhpComparisons,
 } from "./ahp";
 import type { AhpComparisonMap, Indicator } from "./types";
 
@@ -293,5 +295,183 @@ describe("applyAhpWeightsFromMatrix", () => {
     const result = applyAhpWeightsFromMatrix(indicators, comparisons);
     expect(result[0]!.subjectiveWeight).toBeGreaterThan(result[1]!.subjectiveWeight);
     expect(result[0]!.subjectiveWeight).toBeGreaterThan(result[2]!.subjectiveWeight);
+  });
+});
+
+describe("generateEqualAhpComparisons", () => {
+  it("produces equal weights for all scoring indicators", () => {
+    const indicators = [
+      makeIndicator({ id: "a" }),
+      makeIndicator({ id: "b" }),
+      makeIndicator({ id: "c" }),
+    ];
+    const comparisons = generateEqualAhpComparisons(indicators);
+    const weights = calculateAhpWeights(indicators, comparisons);
+    expect(weights["a"]).toBeCloseTo(1 / 3, 3);
+    expect(weights["b"]).toBeCloseTo(1 / 3, 3);
+    expect(weights["c"]).toBeCloseTo(1 / 3, 3);
+  });
+
+  it("passes consistency check (CR = 0)", () => {
+    const indicators = [
+      makeIndicator({ id: "a" }),
+      makeIndicator({ id: "b" }),
+      makeIndicator({ id: "c" }),
+      makeIndicator({ id: "d" }),
+    ];
+    const comparisons = generateEqualAhpComparisons(indicators);
+    const result = calculateAhp(indicators, comparisons);
+    expect(result.consistency.passed).toBe(true);
+    expect(result.consistency.cr).toBeLessThan(0.001);
+  });
+
+  it("excludes non-scoring indicators", () => {
+    const indicators = [
+      makeIndicator({ id: "a" }),
+      makeIndicator({ id: "b", participatesInScoring: false }),
+      makeIndicator({ id: "c" }),
+    ];
+    const comparisons = generateEqualAhpComparisons(indicators);
+    const weights = calculateAhpWeights(indicators, comparisons);
+    expect(weights["a"]).toBeDefined();
+    expect(weights["b"]).toBeUndefined();
+    expect(weights["c"]).toBeDefined();
+  });
+
+  it("returns empty map for no scoring indicators", () => {
+    const indicators = [makeIndicator({ id: "a", participatesInScoring: false })];
+    expect(generateEqualAhpComparisons(indicators)).toEqual({});
+  });
+});
+
+describe("generateRankedAhpComparisons", () => {
+  it("produces descending weights in selected order", () => {
+    const indicators = [
+      makeIndicator({ id: "a" }),
+      makeIndicator({ id: "b" }),
+      makeIndicator({ id: "c" }),
+      makeIndicator({ id: "d" }),
+    ];
+    const comparisons = generateRankedAhpComparisons(indicators, ["a", "b", "c", "d"]);
+    const weights = calculateAhpWeights(indicators, comparisons);
+    expect(weights["a"]!).toBeGreaterThan(weights["b"]!);
+    expect(weights["b"]!).toBeGreaterThan(weights["c"]!);
+    expect(weights["c"]!).toBeGreaterThan(weights["d"]!);
+    const sum = Object.values(weights).reduce((s, w) => s + w, 0);
+    expect(sum).toBeCloseTo(1, 4);
+  });
+
+  it("active order differs from ranked order: reversed produces correct weights", () => {
+    // Regression test for Codex review finding:
+    // active=[a,b,c] ranked=[c,b,a] — generateRankedAhpComparisons stores
+    // comparisons[c][b], comparisons[c][a], comparisons[b][a]
+    // but buildAhpMatrix reads in active order looking for a->b, a->c, b->c.
+    // Without bidirectional lookup, all comparisons default to 1 (equal weights).
+    const indicators = [
+      makeIndicator({ id: "a" }),
+      makeIndicator({ id: "b" }),
+      makeIndicator({ id: "c" }),
+    ];
+    const comparisons = generateRankedAhpComparisons(indicators, ["c", "b", "a"]);
+    const weights = calculateAhpWeights(indicators, comparisons);
+
+    // c is most important, then b, then a
+    expect(weights["c"]!).toBeGreaterThan(weights["b"]!);
+    expect(weights["b"]!).toBeGreaterThan(weights["a"]!);
+    const sum = Object.values(weights).reduce((s, w) => s + w, 0);
+    expect(sum).toBeCloseTo(1, 4);
+
+    // Verify the matrix is correctly reciprocal
+    const matrix = buildAhpMatrix(indicators, comparisons);
+    // a/c comparison should not be 1 (it should reflect c being more important)
+    // a should be at position 0, c at position 2 in active order [a,b,c]
+    const aVsC = matrix[0]![2]!;
+    const cVsA = matrix[2]![0]!;
+    expect(aVsC).toBeLessThan(1); // a is less important than c
+    expect(aVsC).toBeCloseTo(1 / cVsA, 4); // reciprocal
+  });
+
+  it("passes consistency check with valid CR", () => {
+    const indicators = [
+      makeIndicator({ id: "a" }),
+      makeIndicator({ id: "b" }),
+      makeIndicator({ id: "c" }),
+    ];
+    const comparisons = generateRankedAhpComparisons(indicators, ["a", "b", "c"]);
+    const result = calculateAhp(indicators, comparisons);
+    expect(result.consistency.passed).toBe(true);
+    expect(result.consistency.cr).toBeLessThanOrEqual(0.1);
+  });
+
+  it("appends missing active indicators in original order", () => {
+    const indicators = [
+      makeIndicator({ id: "a" }),
+      makeIndicator({ id: "b" }),
+      makeIndicator({ id: "c" }),
+    ];
+    // Only "b" in orderedIds, "a" and "c" appended
+    const comparisons = generateRankedAhpComparisons(indicators, ["b"]);
+    const weights = calculateAhpWeights(indicators, comparisons);
+    // "b" should have highest weight (first in order)
+    expect(weights["b"]!).toBeGreaterThan(weights["a"]!);
+    const sum = Object.values(weights).reduce((s, w) => s + w, 0);
+    expect(sum).toBeCloseTo(1, 4);
+  });
+
+  it("ignores orderedIds not in active set", () => {
+    const indicators = [
+      makeIndicator({ id: "a" }),
+      makeIndicator({ id: "b" }),
+    ];
+    const comparisons = generateRankedAhpComparisons(indicators, ["ghost", "a", "b"]);
+    const weights = calculateAhpWeights(indicators, comparisons);
+    expect(weights["a"]!).toBeGreaterThan(weights["b"]!);
+    expect(weights["ghost"]).toBeUndefined();
+  });
+
+  it("excludes non-scoring indicators", () => {
+    const indicators = [
+      makeIndicator({ id: "a" }),
+      makeIndicator({ id: "b", participatesInScoring: false }),
+      makeIndicator({ id: "c" }),
+    ];
+    const comparisons = generateRankedAhpComparisons(indicators, ["c", "b", "a"]);
+    const weights = calculateAhpWeights(indicators, comparisons);
+    expect(weights["a"]).toBeDefined();
+    expect(weights["b"]).toBeUndefined();
+    expect(weights["c"]).toBeDefined();
+  });
+
+  it("duplicate entries in orderedIds are de-duplicated", () => {
+    const indicators = [
+      makeIndicator({ id: "a" }),
+      makeIndicator({ id: "b" }),
+      makeIndicator({ id: "c" }),
+    ];
+    const comp1 = generateRankedAhpComparisons(indicators, ["a", "b", "c"]);
+    const comp2 = generateRankedAhpComparisons(indicators, ["a", "a", "b", "c"]);
+    const w1 = calculateAhpWeights(indicators, comp1);
+    const w2 = calculateAhpWeights(indicators, comp2);
+    expect(w1["a"]).toBeCloseTo(w2["a"]!, 4);
+    expect(w1["b"]).toBeCloseTo(w2["b"]!, 4);
+  });
+
+  it("generates only valid Saaty values (1-9 and reciprocals)", () => {
+    const validValues = new Set([
+      1 / 9, 1 / 8, 1 / 7, 1 / 6, 1 / 5, 1 / 4, 1 / 3, 1 / 2,
+      1, 2, 3, 4, 5, 6, 7, 8, 9,
+    ]);
+    const indicators = Array.from({ length: 6 }, (_, i) =>
+      makeIndicator({ id: `ind-${i}` }),
+    );
+    const comparisons = generateRankedAhpComparisons(indicators, indicators.map((ind) => ind.id));
+    const matrix = buildAhpMatrix(indicators, comparisons);
+    for (const row of matrix) {
+      for (const val of row) {
+        // Allow floating-point nearness to valid values
+        const isClose = [...validValues].some((v) => Math.abs(val - v) < 1e-9);
+        expect(isClose).toBe(true);
+      }
+    }
   });
 });

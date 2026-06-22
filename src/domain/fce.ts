@@ -102,7 +102,7 @@ export function calculatePropertyScore(property: PropertyRecord, indicators: Ind
     const membership = membershipFromRule(indicator, property.valuesByIndicatorId[indicator.id] ?? "");
     if (!membership) continue;
 
-    const weight = Math.max(0, indicator.finalWeight || indicator.subjectiveWeight);
+    const weight = Math.max(0, indicator.finalWeight);
     if (weight <= 0) continue;
 
     totals.excellent += membership.excellent * weight;

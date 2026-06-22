@@ -59,6 +59,8 @@ export interface PropertyRecord {
 
 export type AhpComparisonMap = Record<string, Record<string, number>>;
 
+export type AhpGenerationMode = "manual" | "equal" | "ranked";
+
 export interface ScoringProfile {
   id: string;
   name: string;
@@ -67,6 +69,8 @@ export interface ScoringProfile {
   objectiveWeightMethod: "entropy";
   subjectiveBlend: number;
   ahpComparisons?: AhpComparisonMap;
+  ahpGenerationMode: AhpGenerationMode;
+  rankedOrderIds?: string[];
 }
 
 export interface PropertyScore {

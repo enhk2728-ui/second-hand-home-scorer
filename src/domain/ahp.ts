@@ -1,4 +1,5 @@
 import type { AhpComparisonMap, Indicator } from "./types";
+export type { AhpGenerationMode } from "./types";
 
 /** Saaty's random index (RI) table for n = 1..10. For n > 10, use 1.49. */
 const RI_TABLE: Record<number, number> = {
@@ -88,8 +89,17 @@ export function buildAhpMatrix(
     for (let j = i + 1; j < n; j++) {
       const fromId = active[i]!.id;
       const toId = active[j]!.id;
+      // Bidirectional lookup: try from->to, then to->from reciprocal.
       const raw = comparisons?.[fromId]?.[toId];
-      const value = raw !== undefined ? normalizeAhpValue(raw) : 1;
+      let value: number;
+      if (raw !== undefined) {
+        value = normalizeAhpValue(raw);
+      } else {
+        const reciprocal = comparisons?.[toId]?.[fromId];
+        value = reciprocal !== undefined
+          ? normalizeAhpValue(1 / reciprocal)
+          : 1;
+      }
       matrix[i]![j] = value;
       matrix[j]![i] = 1 / value;
     }
@@ -204,6 +214,108 @@ export function applyAhpWeightsFromMatrix(
 ): Indicator[] {
   const weights = calculateAhpWeights(indicators, comparisons);
 
+  return indicators.map((ind) => {
+    if (ind.participatesInScoring && weights[ind.id] !== undefined) {
+      const w = weights[ind.id]!;
+      return {
+        ...ind,
+        subjectiveWeight: Math.round(w * 1000) / 1000,
+        finalWeight: Math.round(w * 1000) / 1000,
+      };
+    }
+    return ind;
+  });
+}
+
+/**
+ * Saaty scale values indexed by rank distance.
+ * distance 0 → 1 (equal), 1 → 2, 2 → 3, 3 → 4, >=4 → 5.
+ */
+function saatyFromRankDistance(distance: number): number {
+  if (distance <= 0) return 1;
+  if (distance === 1) return 2;
+  if (distance === 2) return 3;
+  if (distance === 3) return 4;
+  return 5;
+}
+
+/**
+ * Generate equal-importance pairwise comparisons for all scoring indicators.
+ * All comparisons are 1, producing equal weights. CR = 0 (perfectly consistent).
+ */
+export function generateEqualAhpComparisons(
+  indicators: Indicator[],
+): AhpComparisonMap {
+  const active = indicators.filter((ind) => ind.participatesInScoring);
+  const comparisons: AhpComparisonMap = {};
+
+  for (let i = 0; i < active.length; i++) {
+    const fromId = active[i]!.id;
+    comparisons[fromId] ??= {};
+    for (let j = i + 1; j < active.length; j++) {
+      const toId = active[j]!.id;
+      comparisons[fromId]![toId] = 1;
+      // Reciprocal stored in buildAhpMatrix, not here
+    }
+  }
+
+  return comparisons;
+}
+
+/**
+ * Generate ranked pairwise comparisons based on a user-provided indicator order.
+ * Only scoring indicators are included. Indicators earlier in orderedIds are
+ * considered more important. Saaty scale values are derived from rank distance.
+ *
+ * Missing active indicators are appended in their original indicator order.
+ * Only the upper triangle is stored; buildAhpMatrix handles reciprocals.
+ */
+export function generateRankedAhpComparisons(
+  indicators: Indicator[],
+  orderedIds: string[],
+): AhpComparisonMap {
+  const active = indicators.filter((ind) => ind.participatesInScoring);
+  const activeIds = new Set(active.map((ind) => ind.id));
+
+  // Build ordered list: user-provided order first, then missing active indicators
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const id of orderedIds) {
+    if (activeIds.has(id) && !seen.has(id)) {
+      ordered.push(id);
+      seen.add(id);
+    }
+  }
+  for (const ind of active) {
+    if (!seen.has(ind.id)) {
+      ordered.push(ind.id);
+      seen.add(ind.id);
+    }
+  }
+
+  const comparisons: AhpComparisonMap = {};
+
+  for (let i = 0; i < ordered.length; i++) {
+    const fromId = ordered[i]!;
+    comparisons[fromId] ??= {};
+    for (let j = i + 1; j < ordered.length; j++) {
+      const toId = ordered[j]!;
+      const distance = j - i;
+      const value = saatyFromRankDistance(distance);
+      comparisons[fromId]![toId] = value;
+    }
+  }
+
+  return comparisons;
+}
+
+/**
+ * Apply AHP weights directly from a weights record (for auto-generation modes).
+ */
+export function applyAhpWeightsFromRecord(
+  indicators: Indicator[],
+  weights: Record<string, number>,
+): Indicator[] {
   return indicators.map((ind) => {
     if (ind.participatesInScoring && weights[ind.id] !== undefined) {
       const w = weights[ind.id]!;

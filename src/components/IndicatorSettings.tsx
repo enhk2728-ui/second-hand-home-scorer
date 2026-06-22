@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { DEFAULT_INDICATORS } from "../domain/defaults";
-import type { FceRule, Indicator, IndicatorDirection, IndicatorInputType, ScoringProfile } from "../domain/types";
-import { applyAhpWeightsFromMatrix, calculateAhp, setAhpComparison } from "../domain/ahp";
+import type { AhpGenerationMode, FceRule, Indicator, IndicatorDirection, IndicatorInputType, ScoringProfile } from "../domain/types";
+import {
+  applyAhpWeightsFromMatrix,
+  applyAhpWeightsFromRecord,
+  calculateAhp,
+  calculateAhpWeights,
+  generateEqualAhpComparisons,
+  generateRankedAhpComparisons,
+  setAhpComparison,
+} from "../domain/ahp";
 
 interface IndicatorSettingsProps {
   indicators: Indicator[];
@@ -73,6 +81,12 @@ function ahpValueLabel(value: number): string {
   return `1/${Math.round(1 / value)}`;
 }
 
+const MODE_LABELS: Record<AhpGenerationMode, string> = {
+  equal: "自动：等权",
+  ranked: "自动：按重要性排序",
+  manual: "手动：判断矩阵",
+};
+
 export function IndicatorSettings({
   indicators,
   scoringProfile,
@@ -81,9 +95,60 @@ export function IndicatorSettings({
 }: IndicatorSettingsProps) {
   const [draftIndicators, setDraftIndicators] = useState<Indicator[]>(() => [...indicators]);
 
+  // Track rank ordering for ranked mode
+  const [rankedOrder, setRankedOrder] = useState<string[]>(() => {
+    const activeIds = draftIndicators.filter((ind) => ind.participatesInScoring).map((ind) => ind.id);
+    if (scoringProfile.rankedOrderIds && scoringProfile.rankedOrderIds.length > 0) {
+      // Preserve existing order, append new active IDs
+      const existing = scoringProfile.rankedOrderIds.filter((id) => activeIds.includes(id));
+      const newIds = activeIds.filter((id) => !existing.includes(id));
+      return [...existing, ...newIds];
+    }
+    return activeIds;
+  });
+
   useEffect(() => {
     setDraftIndicators([...indicators]);
   }, [indicators]);
+
+  // Sync ranked order when scoring indicators change
+  useEffect(() => {
+    const activeIds = draftIndicators.filter((ind) => ind.participatesInScoring).map((ind) => ind.id);
+    setRankedOrder((prev) => {
+      const kept = prev.filter((id) => activeIds.includes(id));
+      const newIds = activeIds.filter((id) => !kept.includes(id));
+      return [...kept, ...newIds];
+    });
+  }, [draftIndicators]);
+
+  // Prune stale comparisons when indicators are removed or deactivated
+  useEffect(() => {
+    const activeIds = new Set(
+      draftIndicators.filter((ind) => ind.participatesInScoring).map((ind) => ind.id)
+    );
+    const comparisons = scoringProfile.ahpComparisons ?? {};
+    const needsPruning = Object.keys(comparisons).some(
+      (fromId) => !activeIds.has(fromId)
+    );
+    if (!needsPruning) {
+      const hasStaleTarget = Object.entries(comparisons).some(([fromId, row]) =>
+        activeIds.has(fromId) && row && Object.keys(row).some((toId) => !activeIds.has(toId))
+      );
+      if (!hasStaleTarget) return;
+    }
+
+    const pruned: Record<string, Record<string, number>> = {};
+    for (const fromId of Object.keys(comparisons)) {
+      if (!activeIds.has(fromId)) continue;
+      pruned[fromId] = {};
+      for (const toId of Object.keys(comparisons[fromId] ?? {})) {
+        if (activeIds.has(toId)) {
+          pruned[fromId]![toId] = comparisons[fromId]![toId]!;
+        }
+      }
+    }
+    onProfileChange({ ...scoringProfile, ahpComparisons: pruned });
+  }, [draftIndicators]); // only re-run when draft indiciators change structurally
 
   const ahpResult = useMemo(
     () => calculateAhp(draftIndicators, scoringProfile.ahpComparisons),
@@ -94,6 +159,8 @@ export function IndicatorSettings({
     () => draftIndicators.filter((ind) => ind.participatesInScoring),
     [draftIndicators],
   );
+
+  const mode: AhpGenerationMode = scoringProfile.ahpGenerationMode ?? "manual";
 
   function updateOne(id: string, patch: Partial<Indicator>) {
     const updated = draftIndicators.map((ind) => {
@@ -130,11 +197,67 @@ export function IndicatorSettings({
     const defaults = [...DEFAULT_INDICATORS];
     setDraftIndicators(defaults);
     onChange(defaults);
+    const activeIds = defaults.filter((ind) => ind.participatesInScoring).map((ind) => ind.id);
+    setRankedOrder(activeIds);
+    onProfileChange({ ...scoringProfile, ahpComparisons: {}, rankedOrderIds: activeIds });
+  }
+
+  function setMode(newMode: AhpGenerationMode) {
+    if (newMode === mode) return;
+
+    let newComparisons = scoringProfile.ahpComparisons;
+    let newRankedOrderIds = scoringProfile.rankedOrderIds;
+
+    if (newMode === "equal") {
+      newComparisons = generateEqualAhpComparisons(draftIndicators);
+      newRankedOrderIds = draftIndicators.filter((ind) => ind.participatesInScoring).map((ind) => ind.id);
+    } else if (newMode === "ranked") {
+      const order = rankedOrder.length > 0 ? rankedOrder : draftIndicators.filter((ind) => ind.participatesInScoring).map((ind) => ind.id);
+      newComparisons = generateRankedAhpComparisons(draftIndicators, order);
+      newRankedOrderIds = order;
+    }
+    // switching to manual keeps existing comparisons
+
+    onProfileChange({
+      ...scoringProfile,
+      ahpGenerationMode: newMode,
+      ahpComparisons: newComparisons,
+      rankedOrderIds: newRankedOrderIds,
+    });
+  }
+
+  function regenerateForRanked() {
+    const order = rankedOrder.length > 0 ? rankedOrder : draftIndicators.filter((ind) => ind.participatesInScoring).map((ind) => ind.id);
+    const newComparisons = generateRankedAhpComparisons(draftIndicators, order);
+    onProfileChange({
+      ...scoringProfile,
+      ahpComparisons: newComparisons,
+      rankedOrderIds: order,
+    });
+  }
+
+  function moveRankedItem(id: string, direction: -1 | 1) {
+    setRankedOrder((prev) => {
+      const index = prev.indexOf(id);
+      if (index < 0) return prev;
+      const newIndex = index + direction;
+      if (newIndex < 0 || newIndex >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[newIndex]] = [next[newIndex]!, next[index]!];
+      return next;
+    });
   }
 
   function applyWeights() {
-    const weighted = applyAhpWeightsFromMatrix(draftIndicators, scoringProfile.ahpComparisons);
-    onChange(weighted);
+    if (scoringProfile.ahpGenerationMode === "equal" || scoringProfile.ahpGenerationMode === "ranked") {
+      const comparisons = scoringProfile.ahpComparisons ?? {};
+      const weights = calculateAhpWeights(draftIndicators, comparisons);
+      const weighted = applyAhpWeightsFromRecord(draftIndicators, weights);
+      onChange(weighted);
+    } else {
+      const weighted = applyAhpWeightsFromMatrix(draftIndicators, scoringProfile.ahpComparisons);
+      onChange(weighted);
+    }
   }
 
   function handleComparisonChange(fromId: string, toId: string, value: number) {
@@ -182,6 +305,9 @@ export function IndicatorSettings({
     onChange(updated);
   }
 
+  const canApply = scoringIndicators.length >= 1;
+  const crFailed = !ahpResult.consistency.passed && scoringIndicators.length >= 3;
+
   return (
     <section className="panel">
       <div className="panel-header">
@@ -199,11 +325,6 @@ export function IndicatorSettings({
         </div>
       </div>
 
-      <p className="muted">
-        在下方的 AHP 判断矩阵中手动填写指标间的两两比较值（Saaty 1-9 标度），
-        然后点击「应用判断矩阵计算权重」更新指标权重。
-      </p>
-
       <div className="table-wrap">
         <table>
           <thead>
@@ -213,7 +334,7 @@ export function IndicatorSettings({
               <th>类型</th>
               <th>方向</th>
               <th>FCE规则</th>
-              <th>AHP权重</th>
+              <th>权重</th>
               <th>参与评分</th>
               <th>硬伤否决</th>
               <th>操作</th>
@@ -332,70 +453,173 @@ export function IndicatorSettings({
         </table>
       </div>
 
+      {/* AHP Weight Configuration */}
       {scoringIndicators.length >= 2 ? (
         <div className="ahp-matrix">
-          <h3>AHP 判断矩阵</h3>
-          <p className="muted">
-            在下三角填写指标间的相对重要程度。选择 <code>{">1"}</code> 表示行指标比列指标更重要，
-            选择 <code>{"1/<n>"}</code> 表示行指标不如列指标重要。
-          </p>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th></th>
-                  {scoringIndicators.map((ind) => (
-                    <th key={ind.id}>{ind.name}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {scoringIndicators.map((rowInd, i) => (
-                  <tr key={rowInd.id}>
-                    <td className="label-cell">{rowInd.name}</td>
-                    {scoringIndicators.map((colInd, j) => {
-                      if (i === j) {
-                        return <td key={colInd.id}>1</td>;
-                      }
-                      if (i < j) {
-                        // Upper triangle: editable select
-                        const selectedValue = ahpResult.matrix[i]?.[j] ?? 1;
-                        return (
-                          <td key={colInd.id}>
-                            <select
-                              className="inline-input ahp-select"
-                              value={selectedValue}
-                              onChange={(event) =>
-                                handleComparisonChange(
-                                  rowInd.id,
-                                  colInd.id,
-                                  Number(event.target.value),
-                                )
-                              }
-                            >
-                              {AHP_SELECT_VALUES.map((opt) => (
-                                <option key={opt.value} value={opt.value}>
-                                  {opt.label}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-                        );
-                      }
-                      // Lower triangle: read-only reciprocal
-                      const reciprocal = ahpResult.matrix[i]?.[j] ?? 1;
-                      return (
-                        <td key={colInd.id} className="reciprocal-cell">
-                          {ahpValueLabel(reciprocal)}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <h3>AHP 权重配置</h3>
+
+          {/* Mode Selector */}
+          <div className="ahp-mode-selector">
+            {(["equal", "ranked", "manual"] as AhpGenerationMode[]).map((m) => (
+              <button
+                key={m}
+                type="button"
+                className={`ahp-mode-button ${mode === m ? "ahp-mode-active" : ""}`}
+                onClick={() => setMode(m)}
+              >
+                {MODE_LABELS[m]}
+              </button>
+            ))}
           </div>
 
+          <p className="muted" style={{ marginTop: 8 }}>
+            {mode === "equal" && "所有参与评分的指标同等重要，权重平均分配。一致性必然通过。"}
+            {mode === "ranked" && "按下方顺序排列指标重要性，系统自动生成判断矩阵。排序靠前的指标权重更高。"}
+            {mode === "manual" && "手动填写指标间的两两比较值（Saaty 1-9 标度）。对角线自动为1，下三角自动填倒数。"}
+          </p>
+
+          {/* Ranked Ordering UI */}
+          {mode === "ranked" && (
+            <div className="ahp-ranked-order">
+              <h4>指标重要性排序（上→下：最重要→最不重要）</h4>
+              <div className="ahp-ranked-list">
+                {rankedOrder.map((id, index) => {
+                  const ind = draftIndicators.find((i) => i.id === id);
+                  if (!ind || !ind.participatesInScoring) return null;
+                  return (
+                    <div key={id} className="ahp-ranked-item">
+                      <span className="ahp-ranked-num">{index + 1}</span>
+                      <span className="ahp-ranked-name">{ind.name}</span>
+                      <span className="ahp-ranked-category">{ind.category}</span>
+                      <div className="ahp-ranked-buttons">
+                        <button
+                          className="order-button"
+                          type="button"
+                          disabled={index === 0}
+                          onClick={() => moveRankedItem(id, -1)}
+                          title="上移"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          className="order-button"
+                          type="button"
+                          disabled={index === rankedOrder.length - 1}
+                          onClick={() => moveRankedItem(id, 1)}
+                          title="下移"
+                        >
+                          ↓
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <button className="primary-button" type="button" onClick={regenerateForRanked}>
+                  重新生成判断矩阵
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Manual Matrix (only visible in manual mode) */}
+          {mode === "manual" ? (
+            <>
+              <p className="muted" style={{ marginTop: 12 }}>
+                在下三角填写指标间的相对重要程度。选择 <code>{">1"}</code> 表示行指标比列指标更重要，
+                选择 <code>{"1/<n>"}</code> 表示行指标不如列指标重要。
+              </p>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th></th>
+                      {scoringIndicators.map((ind) => (
+                        <th key={ind.id}>{ind.name}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scoringIndicators.map((rowInd, i) => (
+                      <tr key={rowInd.id}>
+                        <td className="label-cell">{rowInd.name}</td>
+                        {scoringIndicators.map((colInd, j) => {
+                          if (i === j) {
+                            return <td key={colInd.id}>1</td>;
+                          }
+                          if (i < j) {
+                            const selectedValue = ahpResult.matrix[i]?.[j] ?? 1;
+                            return (
+                              <td key={colInd.id}>
+                                <select
+                                  className="inline-input ahp-select"
+                                  value={selectedValue}
+                                  onChange={(event) =>
+                                    handleComparisonChange(
+                                      rowInd.id,
+                                      colInd.id,
+                                      Number(event.target.value),
+                                    )
+                                  }
+                                >
+                                  {AHP_SELECT_VALUES.map((opt) => (
+                                    <option key={opt.value} value={opt.value}>
+                                      {opt.label}
+                                    </option>
+                                  ))}
+                                </select>
+                              </td>
+                            );
+                          }
+                          const reciprocal = ahpResult.matrix[i]?.[j] ?? 1;
+                          return (
+                            <td key={colInd.id} className="reciprocal-cell">
+                              {ahpValueLabel(reciprocal)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            /* Auto-generated matrix preview */
+            <div className="ahp-matrix-preview" style={{ marginTop: 12 }}>
+              <h4>生成的判断矩阵预览</h4>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th></th>
+                      {scoringIndicators.map((ind) => (
+                        <th key={ind.id}>{ind.name}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ahpResult.matrix.map((row, i) => (
+                      <tr key={scoringIndicators[i]?.id}>
+                        <td className="label-cell">{scoringIndicators[i]?.name}</td>
+                        {row.map((value, j) => (
+                          <td key={j} className={i > j ? "reciprocal-cell" : ""}>
+                            {i === j ? "1" : ahpValueLabel(value)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="muted" style={{ marginTop: 6 }}>
+                切换到「手动：判断矩阵」可编辑此矩阵。
+              </p>
+            </div>
+          )}
+
+          {/* Consistency Metrics */}
           <div className="ahp-consistency">
             <h4>一致性检验</h4>
             <div className="ahp-stats">
@@ -421,15 +645,26 @@ export function IndicatorSettings({
             </div>
           </div>
 
+          {/* Apply Button */}
           <div style={{ marginTop: 16 }}>
-            <button className="primary-button" type="button" onClick={applyWeights}>
-              应用判断矩阵计算权重
+            {crFailed ? (
+              <p className="muted" style={{ color: "var(--error)", marginBottom: 8 }}>
+                一致性检验未通过（CR &gt; 0.1），建议调整判断矩阵后再应用权重。
+              </p>
+            ) : null}
+            <button
+              className="primary-button"
+              type="button"
+              onClick={applyWeights}
+              title={crFailed ? "CR 不通过，权重可能不稳定 — 仍然可以强制应用" : undefined}
+            >
+              应用权重
             </button>
           </div>
         </div>
       ) : scoringIndicators.length === 1 ? (
         <div className="ahp-matrix">
-          <h3>AHP 权重</h3>
+          <h3>AHP 权重配置</h3>
           <p className="muted">仅有一个参与评分的指标，权重自动为 100%。</p>
           <div className="ahp-consistency">
             <h4>一致性检验</h4>
@@ -439,12 +674,13 @@ export function IndicatorSettings({
           </div>
           <div style={{ marginTop: 16 }}>
             <button className="primary-button" type="button" onClick={applyWeights}>
-              应用判断矩阵计算权重
+              应用权重
             </button>
           </div>
         </div>
       ) : (
         <div className="ahp-matrix">
+          <h3>AHP 权重配置</h3>
           <p className="muted">没有参与评分的指标，请先启用至少一个指标的「参与评分」选项。</p>
         </div>
       )}

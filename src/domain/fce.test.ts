@@ -76,6 +76,44 @@ describe("FCE scoring", () => {
     expect(score.totalScore).toBe(0);
   });
 
+  it("zero finalWeight indicator contributes no score and does not change total", () => {
+    const zeroWeightInd: Indicator = {
+      id: "zero_wt",
+      name: "不计分指标",
+      category: "测试",
+      inputType: "rating10",
+      direction: "higherBetter",
+      subjectiveWeight: 5, // deliberately non-zero to prove finalWeight takes precedence
+      objectiveWeight: 0,
+      finalWeight: 0, // intentional zero weight
+      objectiveWeightEnabled: false,
+      objectiveWeightMethod: "entropy",
+      participatesInScoring: true,
+      participatesInObjectiveWeight: true,
+      isHardFailCapable: false,
+      fceRule: { type: "rating10" }
+    };
+
+    // Score with only the zero-weight indicator
+    const scoreWithZero = calculatePropertyScore(
+      { ...property, valuesByIndicatorId: { zero_wt: 9 }, hardFails: [] },
+      [zeroWeightInd]
+    );
+    expect(scoreWithZero.totalScore).toBe(0);
+    expect(scoreWithZero.dominantGrade).toBe("poor");
+
+    // Score with a real indicator, then add the zero-weight one — totals should be the same
+    const scoreWithoutZero = calculatePropertyScore(
+      { ...property, valuesByIndicatorId: { commute: 35 }, hardFails: [] },
+      [baseIndicator]
+    );
+    const scoreWithBoth = calculatePropertyScore(
+      { ...property, valuesByIndicatorId: { commute: 35, zero_wt: 9 }, hardFails: [] },
+      [baseIndicator, zeroWeightInd]
+    );
+    expect(scoreWithBoth.totalScore).toBe(scoreWithoutZero.totalScore);
+  });
+
   it("false boolean does not lower FCE score", () => {
     const boolInd: Indicator = {
       id: "has_elevator",

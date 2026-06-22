@@ -1,4 +1,5 @@
 import type { PropertyRecord } from "../domain/types";
+import { calculateUnitPriceYuanPerSqm } from "../domain/propertyMath";
 
 interface PropertyFormProps {
   property: PropertyRecord;
@@ -9,8 +10,9 @@ interface PropertyFormProps {
 export function PropertyForm({ property, onChange, onSave }: PropertyFormProps) {
   function updateBase<K extends keyof PropertyRecord>(key: K, value: PropertyRecord[K]) {
     const next = { ...property, [key]: value, updatedAt: new Date().toISOString() };
-    if ((key === "totalPrice" || key === "area") && Number(next.totalPrice) > 0 && Number(next.area) > 0) {
-      next.unitPrice = Math.round((Number(next.totalPrice) / Number(next.area)) * 100) / 100;
+    if (key === "totalPrice" || key === "area") {
+      const unitPrice = calculateUnitPriceYuanPerSqm(next.totalPrice, next.area);
+      next.unitPrice = unitPrice === "" ? "" : unitPrice;
     }
     onChange(next);
   }

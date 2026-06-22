@@ -9,12 +9,15 @@ import { PropertyDetail } from "./components/PropertyDetail";
 import { loadState, saveState, serializeState, deserializeState } from "./domain/storage";
 import { calculatePropertyScore } from "./domain/fce";
 import { buildCsvExport } from "./domain/csv";
+import { DEFAULT_STATE } from "./domain/defaults";
 import type { AppState, PropertyRecord, ScoringProfile } from "./domain/types";
 
 export default function App() {
   const [state, setState] = useState<AppState>(loadState);
   const [view, setView] = useState<ViewKey>("list");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   useEffect(() => {
     saveState(state);
@@ -125,8 +128,9 @@ export default function App() {
             ...restored,
             selectedPropertyId: restored.properties[0]?.id ?? null
           });
+          setImportError(null);
         } catch {
-          alert("导入失败：文件格式不正确。");
+          setImportError("导入失败：文件格式不正确。");
         }
       };
       reader.readAsText(file);
@@ -147,6 +151,12 @@ export default function App() {
     URL.revokeObjectURL(url);
   }, [state, scores]);
 
+  const handleResetData = useCallback(() => {
+    setState(DEFAULT_STATE);
+    setShowResetConfirm(false);
+    setView("list");
+  }, []);
+
   return (
     <Shell activeView={view} onViewChange={setView}>
       <div className="toolbar">
@@ -159,8 +169,33 @@ export default function App() {
         <button className="ghost-button" type="button" onClick={handleExportCsv}>
           导出 CSV
         </button>
+        <div style={{ flex: 1 }} />
+        {showResetConfirm ? (
+          <>
+            <span className="muted" style={{ fontSize: 12 }}>确认重置所有数据为默认？</span>
+            <button className="ghost-button danger-button" type="button" onClick={handleResetData}>
+              确认重置
+            </button>
+            <button className="ghost-button" type="button" onClick={() => setShowResetConfirm(false)}>
+              取消
+            </button>
+          </>
+        ) : (
+          <button className="ghost-button" type="button" onClick={() => setShowResetConfirm(true)}>
+            重置数据
+          </button>
+        )}
         <input ref={fileInputRef} type="file" accept="application/json" style={{ display: "none" }} onChange={handleImportJson} />
       </div>
+
+      {importError && (
+        <div className="error-banner">
+          <span>{importError}</span>
+          <button className="error-banner-dismiss" type="button" onClick={() => setImportError(null)}>
+            ×
+          </button>
+        </div>
+      )}
 
       {view === "list" && (
         <div className="split-view">
@@ -181,6 +216,22 @@ export default function App() {
 
       {view === "form" && selectedProperty && (
         <PropertyForm property={selectedProperty} onChange={handleChangeProperty} onSave={() => setView("list")} />
+      )}
+
+      {view === "form" && !selectedProperty && (
+        <section className="panel">
+          <div className="empty-state">
+            <p>暂未选择房源。</p>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="primary-button" type="button" onClick={handleAddProperty}>
+                新建房源
+              </button>
+              <button className="ghost-button" type="button" onClick={() => setView("list")}>
+                从列表中选择
+              </button>
+            </div>
+          </div>
+        </section>
       )}
 
       {view === "score" && (
